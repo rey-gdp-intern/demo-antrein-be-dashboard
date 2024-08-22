@@ -18,6 +18,8 @@ env:
   GCP_REGION: asia-southeast2
   GCP_ZONE: asia-southeast2-a
 
+  BRANCH: ${{ github.ref == 'refs/heads/staging' && 'staging' || 'production' }}
+
   AWS_REGION: us-east-1
   AWS_ROLE_ARN: arn:aws:iam::302546992452:user/glair-exploration-rey-intern
   EKS_CLUSTER_NAME: sandbox-intern
@@ -53,18 +55,22 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Create config
+      - name: Create secret
         run: |
-          echo "${{ vars.APP_CONFIG }}" > ./app-config.yaml
-          echo "${{ vars.APP_CONFIG_PRODUCTION }}" > ./app-config.production.yaml
+          echo '${{ vars.ENV }}' > ./files/secrets/secrets.config.json
 
-      - name: Create secrets
+      - name: Add Config
         run: |
-          cd packages/backend
-          mkdir secrets
-          cd secrets
-          echo '${{ vars.GCP_SA_KEY }}' > ./gcp_sa.json
-          echo '${{ vars.GCP_SA_KEY_TEST }}' > ./gcp_sa_test.json
+          jq --arg be_mode "${{ vars.CONFIG_BE_MODE }}" \
+            --arg infra_mode "${{ vars.CONFIG_INFRA_MODE }}" \
+            --arg base_url "${{ vars.BASE_URL }}" \
+            '. + {"be_mode": $be_mode, "infra_mode": $infra_mode, "infra": (.infra + { "manager_url": ("https://infra." + $base_url) })}' \
+            ./files/secrets/secrets.config.json > ./files/secrets/secrets.tmp.json \
+          && mv ./files/secrets/secrets.tmp.json ./files/secrets/secrets.config.json
+
+      - name: Test secret
+        run: |
+          cat ./files/secrets/secrets.config.json
 
       - name: Build and push Docker Image
         env: 
@@ -86,10 +92,11 @@ jobs:
           IMAGE_NAME: ${{ needs.setup-environment.outputs.IMAGE_NAME }}
           SHORT_SHA: ${{ needs.setup-environment.outputs.SHORT_SHA }}
         run: |
-          sed -i "s|<IMAGE_NAME>|${{ env.IMAGE_NAME }}|g" k8s/service/2-app.yml
-          sed -i "s|<VERSION>|${{ env.SHORT_SHA }}|g" k8s/service/2-app.yml
-          sed -i "s|<PORT>|${{ env.PORT }}|g" k8s/service/2-app.yml
-          cat k8s/service/2-app.yml
+          sed -i "s|<PROJECT_NAME>|${{ env.PROJECT_NAME }}|g" k8s/${{ env.BRANCH }}.yml
+          sed -i "s|<IMAGE_NAME>|${{ env.IMAGE_NAME }}|g" k8s/${{ env.BRANCH }}.yml
+          sed -i "s|<VERSION>|${{ env.SHORT_SHA }}|g" k8s/${{ env.BRANCH }}.yml
+          sed -i "s|<PORT>|${{ env.PORT }}|g" k8s/${{ env.BRANCH }}.yml
+          cat k8s/${{ env.BRANCH }}.yml
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -119,7 +126,7 @@ jobs:
         run: |
           cat ~/.aws/config
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
-          kubectl apply -f k8s/service/2-app.yml
+          kubectl apply -f k8s/${{ env.BRANCH }}.yml
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
